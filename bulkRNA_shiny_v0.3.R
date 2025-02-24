@@ -14,6 +14,9 @@ library(readxl)
 library(org.Hs.eg.db) # Default human, can be changed dynamically
 library(gridExtra)
 library(grid)
+library(ggrepel)
+library(ggfun)
+library(tidyverse)
 
 ui <- fluidPage(
   titlePanel("RNA-seq DEG Analysis"),
@@ -26,18 +29,19 @@ ui <- fluidPage(
                   choices = c("DESeq2(Count)" = "deseq2", "Wilcoxon (TPM/FPKM)" = "wilcoxon")),
       selectInput("filterMethod", "Filter Method",
                   choices = c("pvalue" = "pvalue","padj" = "padj")),
-      numericInput("filterThreshold", "Filter Threshold", value = 0.05, step = 0.01),
+      #numericInput("filterThreshold", "Filter Threshold", value = 0.05, step = 0.01),
+      numericInput("filterThreshold", "Filter Threshold", value = 0.05),
       numericInput("foldChange", "log2 Fold Change Cutoff", value = 1),
       textInput("comparison", "Group Comparison (e.g., control,case)", value = "control,case"),
       selectInput("species", "Species",
                   choices = c("Human" = "org.Hs.eg.db", "Mouse" = "org.Mm.eg.db")),
-      checkboxGroupInput("enrichMethods", "Enrichment Methods",
-                         choices = c("GO" = "go", "KEGG" = "kegg", "Hallmark" = "hallmark", "Reactome" = "reactome", "Wikipathways" = "wikipathways"),
-                         selected = "go"),
-      #selectInput("enrichMethods", "Enrichment Methods",
-      #      choices = c("GO" = "go", "KEGG" = "kegg","Reactome" = "reactome"
-      #                  #"Hallmark" = "hallmark", "Wikipathways" = "wikipathways"
-      #      )),
+      #checkboxGroupInput("enrichMethods", "Enrichment Methods",
+      #                   choices = c("GO" = "go", "KEGG" = "kegg", "Hallmark" = "hallmark", "Reactome" = "reactome", "Wikipathways" = "wikipathways"),
+      #                   selected = "go"),
+      selectInput("enrichMethods", "Enrichment Methods",
+            choices = c("GO" = "go", "KEGG" = "kegg","Reactome" = "reactome"
+                        #"Hallmark" = "hallmark", "Wikipathways" = "wikipathways"
+            )),
       actionButton("runAnalysis", "Run Analysis")
     ),
     mainPanel(
@@ -136,17 +140,19 @@ server <- function(input, output, session) {
         dds <- DESeq(dds)
         #res <- results(dds, contrast = c(groupCol, comparison[1], comparison[2]))
         res <- results(dds)
+        res <- res %>% tibble::rownames_to_column(var = "GeneID")
 
     } else if (method == "wilcoxon") {
       logtpm <- log2(data$counts + 1)
       group1 <- which(data$meta[[groupCol]] == comparison()[1])
       group2 <- which(data$meta[[groupCol]] == comparison()[2])
-      pvalues <- apply(logtpm, 1, function(x) {wilcox.test(x[group1], x[group2])$p.value})
+      pvalue <- apply(logtpm, 1, function(x) {wilcox.test(x[group1], x[group2])$p.value})
       res <- data.frame(
         row.names = rownames(logtpm),
+        GeneID = rownames(logtpm),
         log2FoldChange = rowMeans(logtpm[, group2]) - rowMeans(logtpm[, group1]),
-        pvalue = pvalues,
-        padj = p.adjust(pvalues, method = "BH")
+        pvalue = pvalue,
+        padj = p.adjust(pvalue, method = "BH")
       )
     }
   res <- as.data.frame(res)
@@ -166,7 +172,6 @@ server <- function(input, output, session) {
     down_genes <- rownames(data$results[data$results$log2FoldChange < -fcCutoff & data$results[[filterMethod]] < threshold, ])
     data$results$sig <- ifelse(rownames(data$results) %in% up_genes,"Up",
                                ifelse(rownames(data$results) %in% down_genes,"Down","None"))
-    print(head(data$results))
     # Enrichment analysis
     #deg_genes <- rownames(data$results)
     deg_genes <- c(up_genes,down_genes)
@@ -262,44 +267,299 @@ server <- function(input, output, session) {
     datatable(data$results, options = list(pageLength = 10), rownames = TRUE)
   })
   
+  # output$volcanoPlot <- renderPlot({
+  #   req(data$results)
+  #   req(input$comparison)
+  #   comparison <- strsplit(input$comparison, ",")[[1]]
+  #   res <- data$results
+  #   EnhancedVolcano(
+  #     res,
+  #     lab = rownames(res),
+  #    # title = paste0(comparison[2]," vs ",comparison[1]),  ## case vs control
+  #     x = 'log2FoldChange',
+  #     #y = ifelse(input$filterMethod == "pvalue","-Log10P","-Log10Padj"),
+  #     y = input$filterMethod, 
+  #     pCutoff = input$filterThreshold,
+  #     FCcutoff = input$foldChange,
+  #     cutoffLineType = "twodash",
+  #     cutoffLineWidth = 0.8,
+  #     pointSize = c(ifelse(res$sig != "None",6,4)),
+  #     labSize = 6.0,
+  #     #col = c("grey",""),
+  #     colAlpha = 1,
+  #     legendLabels = c("Not Sig","Log2FC","Pvalue","Pvalue&Log2FC"),
+  #     legendPosition = "top",
+  #     legendLabSize = 12,
+  #     legendIconSize = 4.0,
+  #     drawConnectors = TRUE,
+  #     widthConnectors = 0.75
+  #   )
+  # })
   output$volcanoPlot <- renderPlot({
     req(data$results)
     req(input$comparison)
+    req(input$filterMethod)
     comparison <- strsplit(input$comparison, ",")[[1]]
+    print(names(data$results))
     res <- data$results
-    EnhancedVolcano(
-      res,
-      lab = rownames(res),
-     # title = paste0(comparison[2]," vs ",comparison[1]),  ## case vs control
-      x = 'log2FoldChange',
-      #y = ifelse(input$filterMethod == "pvalue","-Log10P","-Log10Padj"),
-      y = input$filterMethod, 
-      pCutoff = input$filterThreshold,
-      FCcutoff = input$foldChange,
-      cutoffLineType = "twodash",
-      cutoffLineWidth = 0.8,
-      pointSize = c(ifelse(res$sig != "None",6,4)),
-      labSize = 6.0,
-      #col = c("grey",""),
-      colAlpha = 1,
-      legendLabels = c("Not Sig","Log2FC","Pvalue","Pvalue&Log2FC"),
-      legendPosition = "top",
-      legendLabSize = 12,
-      legendIconSize = 4.0,
-      drawConnectors = TRUE,
-      widthConnectors = 0.75
-    )
+    logFC.limit <- input$foldChange
+    
+    filtermethod <- input$filterMethod
+    filterThreshold <- input$filterThreshold
+    group_name <- paste0(comparison[2]," vs ",comparison[1])
+    if(filtermethod == "pvalue"){
+    
+    ggplot(data = res) + 
+      geom_point(aes(x = log2FoldChange, y = -log10(pvalue), 
+                     color = log2FoldChange,
+                     size = -log10(pvalue))) + 
+      geom_point(data =  res %>%
+                   tidyr::drop_na() %>%
+                   dplyr::filter(sig == "Up") %>%
+                   dplyr::arrange(desc(-log10(pvalue))) %>%
+                   dplyr::slice(1:8),
+                 aes(x = log2FoldChange, y = -log10(pvalue),
+                     # fill = log2FoldChange,
+                     size = -log10(pvalue)),
+                 shape = 21, show.legend = F, color = "#000000") +
+      geom_text_repel(data =  res %>% 
+                        tidyr::drop_na() %>% 
+                        dplyr::filter(sig == "Up") %>%
+                        dplyr::arrange(desc(-log10(pvalue))) %>%
+                        dplyr::slice(1:8),
+                      aes(x = log2FoldChange, y = -log10(pvalue), label = GeneID),
+                      box.padding = 0.5,
+                      nudge_x = 0.5,
+                      nudge_y = 0.2,
+                      segment.curvature = -0.1,
+                      segment.ncp = 3,
+                      # segment.angle = 10,
+                      direction = "y", 
+                      hjust = "left"
+      ) + 
+      geom_point(data =  res %>%
+                   tidyr::drop_na() %>%
+                   dplyr::filter(sig == "Down") %>%
+                   dplyr::arrange(desc(-log10(pvalue))) %>%
+                   dplyr::slice(1:8),
+                 aes(x = log2FoldChange, y = -log10(pvalue),
+                     # fill = log2FoldChange,
+                     size = -log10(pvalue)),
+                 shape = 21, show.legend = F, color = "#000000") +
+      geom_text_repel(data =  res %>% 
+                        tidyr::drop_na() %>% 
+                        dplyr::filter(sig == "Down") %>%
+                        dplyr::arrange(desc(-log10(pvalue))) %>%
+                        dplyr::slice(1:8),
+                      aes(x = log2FoldChange, y = -log10(pvalue), label = GeneID),
+                      box.padding = 0.5,
+                      nudge_x = -0.2,
+                      nudge_y = 0.2,
+                      segment.curvature = -0.1,
+                      segment.ncp = 3,
+                      segment.angle = 20,
+                      direction = "y", 
+                      hjust = "right"
+      ) + 
+      scale_color_gradientn(colours = c("#3288bd", "#66c2a5","#ffffbf", "#f46d43", "#9e0142"),
+                            values = seq(0, 1, 0.2)) +
+      scale_fill_gradientn(colours = c("#3288bd", "#66c2a5","#ffffbf", "#f46d43", "#9e0142"),
+                           values = seq(0, 1, 0.2)) +
+      geom_vline(xintercept = c(-logFC.limit, logFC.limit), linetype = 2) +
+      geom_hline(yintercept = -log10(filterThreshold), linetype = 4) + 
+      scale_size(range = c(1,7)) + 
+      ggtitle(#label = "Volcano Plot",
+        #subtitle = "volcano plot"
+        label = group_name
+      ) + 
+      #xlim(c(-3, 3)) + 
+      #ylim(c(-1, 6)) + 
+        xlim(min(res$log2FoldChange, na.rm = TRUE) - 0.5, 
+             max(res$log2FoldChange, na.rm = TRUE) + 0.5)+
+        ylim(0, max(-log10(res$pvalue), na.rm = TRUE) + 1)+  # Auto-adjust the upper limit
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.background = element_roundrect(color = "#808080", linetype = 1),
+            axis.text = element_text(size = 13, color = "#000000"),
+            axis.title = element_text(size = 15),
+            plot.title = element_text(hjust = 0.5),
+            plot.subtitle = element_text(hjust = 0.5)
+      ) + 
+      annotate(geom = "text", x = 2.5, y = 0.25, label = "p = 0.05", size = 5) + 
+      coord_cartesian(clip = "off") + 
+      annotation_custom(
+        grob = grid::segmentsGrob(
+          y0 = unit(-10, "pt"),
+          y1 = unit(-10, "pt"),
+          arrow = arrow(angle = 45, length = unit(.2, "cm"), ends = "first"),
+          gp = grid::gpar(lwd = 3, col = "#74add1")
+        ), 
+        xmin = -3, 
+        xmax = -1,
+        ymin = 5.5,
+        ymax = 5.5
+      ) +
+      annotation_custom(
+        grob = grid::textGrob(
+          label = "Down",
+          gp = grid::gpar(col = "#74add1")
+        ),
+        xmin = -3, 
+        xmax = -1,
+        ymin = 5.5,
+        ymax = 5.5
+      ) +
+      annotation_custom(
+        grob = grid::segmentsGrob(
+          y0 = unit(-10, "pt"),
+          y1 = unit(-10, "pt"),
+          arrow = arrow(angle = 45, length = unit(.2, "cm"), ends = "last"),
+          gp = grid::gpar(lwd = 3, col = "#d73027")
+        ), 
+        xmin = 1, 
+        xmax = 3,
+        ymin = 5.5,
+        ymax = 5.5
+      ) +
+      annotation_custom(
+        grob = grid::textGrob(
+          label = "Up",
+          gp = grid::gpar(col = "#d73027")
+        ),
+        xmin = 1, 
+        xmax = 3,
+        ymin = 5.5,
+        ymax = 5.5
+      ) 
+    
+    }else if(filtermethod == "padj"){
+      ggplot(data = res) + 
+        geom_point(aes(x = log2FoldChange, y = -log10(padj), 
+                       color = log2FoldChange,
+                       size = -log10(padj))) + 
+        geom_point(data =  res %>%
+                     tidyr::drop_na() %>%
+                     dplyr::filter(sig == "Up") %>%
+                     dplyr::arrange(desc(-log10(padj))) %>%
+                     dplyr::slice(1:8),
+                   aes(x = log2FoldChange, y = -log10(padj),
+                       # fill = log2FoldChange,
+                       size = -log10(padj)),
+                   shape = 21, show.legend = F, color = "#000000") +
+        geom_text_repel(data =  res %>% 
+                          tidyr::drop_na() %>% 
+                          dplyr::filter(sig == "Up") %>%
+                          dplyr::arrange(desc(-log10(padj))) %>%
+                          dplyr::slice(1:8),
+                        aes(x = log2FoldChange, y = -log10(adj), label = GeneID),
+                        box.padding = 0.5,
+                        nudge_x = 0.5,
+                        nudge_y = 0.2,
+                        segment.curvature = -0.1,
+                        segment.ncp = 3,
+                        # segment.angle = 10,
+                        direction = "y", 
+                        hjust = "left"
+        ) + 
+        geom_point(data =  res %>%
+                     tidyr::drop_na() %>%
+                     dplyr::filter(sig == "Down") %>%
+                     dplyr::arrange(desc(-log10(padj))) %>%
+                     dplyr::slice(1:8),
+                   aes(x = log2FoldChange, y = -log10(padj),
+                       # fill = log2FoldChange,
+                       size = -log10(padj)),
+                   shape = 21, show.legend = F, color = "#000000") +
+        geom_text_repel(data =  res %>% 
+                          tidyr::drop_na() %>% 
+                          dplyr::filter(sig == "Down") %>%
+                          dplyr::arrange(desc(-log10(padj))) %>%
+                          dplyr::slice(1:8),
+                        aes(x = log2FoldChange, y = -log10(padj), label = GeneID),
+                        box.padding = 0.5,
+                        nudge_x = -0.2,
+                        nudge_y = 0.2,
+                        segment.curvature = -0.1,
+                        segment.ncp = 3,
+                        segment.angle = 20,
+                        direction = "y", 
+                        hjust = "right"
+        ) + 
+        scale_color_gradientn(colours = c("#3288bd", "#66c2a5","#ffffbf", "#f46d43", "#9e0142"),
+                              values = seq(0, 1, 0.2)) +
+        scale_fill_gradientn(colours = c("#3288bd", "#66c2a5","#ffffbf", "#f46d43", "#9e0142"),
+                             values = seq(0, 1, 0.2)) +
+        geom_vline(xintercept = c(-logFC.limit, logFC.limit), linetype = 2) +
+        geom_hline(yintercept = -log10(filterThreshold), linetype = 4) + 
+        scale_size(range = c(1,7)) + 
+        ggtitle(#label = "Volcano Plot",
+          #subtitle = "volcano plot"
+          label = group_name
+        ) + 
+        #xlim(c(-3, 3)) + 
+        #ylim(c(-1, 6)) + 
+        xlim(min(res$log2FoldChange, na.rm = TRUE) - 0.5, 
+             max(res$log2FoldChange, na.rm = TRUE) + 0.5)+
+        ylim(0, max(-log10(res$pvalue), na.rm = TRUE) + 1)+  # Auto-adjust the upper limit
+        theme_bw() + 
+        theme(panel.grid = element_blank(),
+              legend.background = element_roundrect(color = "#808080", linetype = 1),
+              axis.text = element_text(size = 13, color = "#000000"),
+              axis.title = element_text(size = 15),
+              plot.title = element_text(hjust = 0.5),
+              plot.subtitle = element_text(hjust = 0.5)
+        ) + 
+        annotate(geom = "text", x = 2.5, y = 0.25, label = "p = 0.05", size = 5) + 
+        coord_cartesian(clip = "off") + 
+        annotation_custom(
+          grob = grid::segmentsGrob(
+            y0 = unit(-10, "pt"),
+            y1 = unit(-10, "pt"),
+            arrow = arrow(angle = 45, length = unit(.2, "cm"), ends = "first"),
+            gp = grid::gpar(lwd = 3, col = "#74add1")
+          ), 
+          xmin = -3, 
+          xmax = -1,
+          ymin = 5.5,
+          ymax = 5.5
+        ) +
+        annotation_custom(
+          grob = grid::textGrob(
+            label = "Down",
+            gp = grid::gpar(col = "#74add1")
+          ),
+          xmin = -3, 
+          xmax = -1,
+          ymin = 5.5,
+          ymax = 5.5
+        ) +
+        annotation_custom(
+          grob = grid::segmentsGrob(
+            y0 = unit(-10, "pt"),
+            y1 = unit(-10, "pt"),
+            arrow = arrow(angle = 45, length = unit(.2, "cm"), ends = "last"),
+            gp = grid::gpar(lwd = 3, col = "#d73027")
+          ), 
+          xmin = 1, 
+          xmax = 3,
+          ymin = 5.5,
+          ymax = 5.5
+        ) +
+        annotation_custom(
+          grob = grid::textGrob(
+            label = "Up",
+            gp = grid::gpar(col = "#d73027")
+          ),
+          xmin = 1, 
+          xmax = 3,
+          ymin = 5.5,
+          ymax = 5.5
+        ) 
+    }
+    
   })
+  
 
-#  selectedEnrichPlot <- reactive({
-#    req(data$enriched, input$enrichMethods)
-#    enrich_result <- data$enriched[[input$enrichMethods]]
-#    if (!is.null(enrich_result)) {
-#        dotplot(enrich_result, showCategory = 20)
-#    } else {
-#        NULL
-#    }
-#})
 
   output$enrichPlot <- renderPlot({
     req(data$up_enriched,data$down_enriched)
@@ -312,6 +572,7 @@ server <- function(input, output, session) {
     #print(enrich_result)
     if (!is.null(up_enrich_result)) {
        p1 <-  dotplot(up_enrich_result, showCategory = 20) +
+         theme(plot.margin = margin(10, 10, 10, 10)) + 
           ggtitle(paste(comparison[2],"Up Enrichment Analysis -", toupper(selected_method)))
     } else {
         showNotification(paste("No up enrichment results for", selected_method), type = "warning")
@@ -319,11 +580,12 @@ server <- function(input, output, session) {
     
     if (!is.null(down_enrich_result)) {
      p2 <- dotplot(down_enrich_result, showCategory = 20) +
+       theme(plot.margin = margin(10, 10, 10, 10)) +
         ggtitle(paste(comparison[2],"Down Enrichment Analysis -", toupper(selected_method)))
     } else {
       showNotification(paste("No down enrichment results for", selected_method), type = "warning")
     }
-    grid.arrange(p1,p2,ncol=2
+    grid.arrange(p1,p2,ncol=1,heights = c(1, 1)
                  #top = textGrob("enrichment",
                  #                just=c("center"),
                 #                gp = gpar(fontsize = 20)
@@ -332,13 +594,8 @@ server <- function(input, output, session) {
     
 })
 
-
-#  output$enrichPlot <- renderPlot({
-#    req(data$enriched)
-#    plots <- lapply(data$enriched, function(enrich) {dotplot(enrich, showCategory = 20)})
-#    gridExtra::grid.arrange(grobs = plots, ncol = 1)
-#  })
 }
+
 
 shinyApp(ui = ui, server = server)
 
